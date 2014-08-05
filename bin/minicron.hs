@@ -2,68 +2,96 @@ module Main (main) where
 
 import Control.Concurrent (forkIO, killThread, threadDelay, ThreadId)
 import Control.Concurrent.Chan (newChan, readChan, writeChan, Chan)
+import Control.Concurrent.MVar (modifyMVar, newMVar, takeMVar, putMVar, MVar)
 
 main :: IO ()
 main = do
   putStrLn "minicron"
 
   chan <- newChan
-  -- Simulate a thread that modifies the tasks set.
-  _ <- forkIO $ do
-    writeChan chan $ ReplaceTasks [5, 6, 7, 8]
-    threadDelay $ 13 * 1000000
-    writeChan chan $ ReplaceTasks [1, 2]
-    threadDelay $ 10 * 1000000
-    writeChan chan $ ReplaceTasks [1, 2]
-  mainThread chan (Tasks 0 []) Nothing
+  let request g n = writeChan chan $ RequestWakeUp g n
+      cancel = writeChan chan CancelWakeUp
+  tasks <- makeTasks request cancel
+  mainThread chan tasks Nothing
 
 mainThread :: Chan Event -> Tasks -> Maybe ThreadId -> IO ()
-mainThread chan (Tasks g tasks) msleep = do
+mainThread chan tasks msleep = do
   ev <- readChan chan
   case ev of
-    WakeUp g' | g /= g' ->
-      -- This is a wakeup from a killed sleep thread. Ignore it.
-      return ()
+    WakeUp g -> do
+      mw <- wakeUp tasks g
+      mainThread' chan mw tasks
 
-    WakeUp _ -> case tasks of
-      task : tasks' -> do
-        putStrLn $ "Running task: " ++ show task
-        mainThread' chan g tasks'
-      _ -> do
-        putStrLn $ "Error: no task after wakeup."
-        mainThread' chan g tasks
-
-    ReplaceTasks tasks' -> do
-      putStrLn "Tasks set has been replaced."
+    RequestWakeUp g amount -> do
+      putStrLn "Wakeup requested."
       maybe (return ()) killThread msleep
-      mainThread' chan g tasks'
+      mainThread' chan (Just (g, amount)) tasks
 
-mainThread' chan g tasks = do
-  msleep <- scheduleNextTask chan (g + 1) tasks
-  mainThread chan (Tasks (g + 1) tasks) msleep
+    CancelWakeUp -> do
+      putStrLn "Canceling wakeup."
+      maybe (return ()) killThread msleep
+      mainThread' chan Nothing tasks
 
-scheduleNextTask _ _ [] = do
-  putStrLn "No task to schedule."
-  return Nothing
-scheduleNextTask chan g (task : _) = do
-  fmap Just . forkIO $ sleepThread chan g task
+mainThread' chan mw tasks = do
+  msleep <- maybe (return Nothing) (fmap Just . forkIO . sleepThread chan) mw
+  mainThread chan tasks msleep
 
-sleepThread chan g task = do
-  threadDelay $ task * 1000000
+sleepThread chan (g, amount) = do
+  threadDelay $ amount * 1000000
   writeChan chan $ WakeUp g
 
 data Event =
     WakeUp Int
   -- ^ Sent by the sleep thread for a particular generation.
-  | ReplaceTasks [Task]
-  -- ^ This means the list of tasks is replaced by these.
+  | RequestWakeUp Int Int
+  -- ^ Cancel any previously requested wakeup, and request another one.
+  -- First the generation, then the amount of time in seconds to wait.
+  | CancelWakeUp
+  -- ^ Cancel any previously requested wakeup.
 
 -- In this simple cron modelling, this is the number of seconds to wait
 -- after the previous task has been run (or the system has beend started).
 type Task = Int
 
-data Tasks = Tasks
-  Int
-  -- ^ Generation (used to discard WakeUps from explicitely killed sleep).
-  [Task]
-  -- ^ The set of tasks.
+data Tasks = Tasks (MVar (Int, [Task]))
+  -- ^ Generation (used to discard WakeUps from explicitely killed sleep),
+  -- set of tasks.
+
+-- | Get a reference to tasks. Doing so, let them communicate if a new wakeup
+-- must be rescheduled, or completely canceled.
+makeTasks :: (Int -> Int -> IO ()) -> (IO ()) -> IO Tasks
+makeTasks request cancel = do
+  ref <- newMVar (0, [5, 6, 7, 8])
+  _ <- forkIO $ do
+    request 0 5
+    threadDelay $ 13 * 1000000
+    g <- modifyMVar ref (\(g, _) -> return ((g + 1, [1, 2]), g))
+    request (g + 1) 1
+    threadDelay $ 10 * 1000000
+    g' <- modifyMVar ref (\(g, _) -> return ((g + 1, [1, 2, 2, 2, 2, 2]), g))
+    request (g' + 1) 1
+    threadDelay $ 6 * 1000000
+    cancel
+  return $ Tasks ref
+
+-- | Give a chance to tasks to be run. Return possibly a request to receive
+-- another wakeup n seconds later. The second argument is a generation (i.e. a
+-- identifier to discard wakeups received while they were cancelled).
+wakeUp :: Tasks -> Int -> IO (Maybe (Int, Int))
+wakeUp (Tasks ref) g = do
+  (g', tasks) <- takeMVar ref
+  case tasks of
+    _ | g /= g' -> do
+      -- This is a wakeup from a cancel request. Ignore it.
+      putMVar ref (g', tasks)
+      return Nothing
+    [] -> do
+      putStrLn $ "Error: no task after wakeup."
+      putMVar ref (g', tasks)
+      return Nothing
+    task : tasks' -> do
+      putStrLn $ "Running task: " ++ show task
+      putMVar ref (g + 1, tasks')
+      case tasks' of
+        [] -> return Nothing
+        amount:_ -> return $ Just (g + 1, amount)
