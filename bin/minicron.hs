@@ -1,3 +1,4 @@
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Main (main) where
 
 import Control.Concurrent (forkIO, killThread, threadDelay, ThreadId)
@@ -7,19 +8,21 @@ import Control.Concurrent.MVar (modifyMVar, newMVar, takeMVar, putMVar, MVar)
 main :: IO ()
 main = do
   putStrLn "minicron"
+  wakeupService makeTasks
 
+wakeupService client = do
   chan <- newChan
   let request g n = writeChan chan $ RequestWakeUp g n
       cancel = writeChan chan CancelWakeUp
-  tasks <- makeTasks request cancel
+  tasks <- client request cancel
   mainThread chan tasks Nothing
 
-mainThread :: Chan Event -> Tasks -> Maybe ThreadId -> IO ()
+mainThread :: Chan Event -> Client -> Maybe ThreadId -> IO ()
 mainThread chan tasks msleep = do
   ev <- readChan chan
   case ev of
     WakeUp g -> do
-      mw <- wakeUp tasks g
+      mw <- wakeup tasks g
       mainThread' chan mw tasks
 
     RequestWakeUp g amount -> do
@@ -41,25 +44,34 @@ sleepThread chan (g, amount) = do
   writeChan chan $ WakeUp g
 
 data Event =
-    WakeUp Int
+    WakeUp Generation
   -- ^ Sent by the sleep thread for a particular generation.
-  | RequestWakeUp Int Int
+  | RequestWakeUp Generation Int
   -- ^ Cancel any previously requested wakeup, and request another one.
   -- First the generation, then the amount of time in seconds to wait.
   | CancelWakeUp
   -- ^ Cancel any previously requested wakeup.
 
+-- | A generation is used to identify a particular state in the tasks thread.
+-- It can be viewed as a request ID from the client to the wakeup service. The
+-- wakeup service will answer with it, allowing the client to discard spurious
+-- wakeups.
+newtype Generation = Generation Int
+  deriving (Eq, Num)
+
+data Client = Client { wakeup :: Generation -> IO (Maybe (Generation, Int)) }
+
 -- In this simple cron modelling, this is the number of seconds to wait
--- after the previous task has been run (or the system has beend started).
+-- after the previous task has been run (or the system has been started).
 type Task = Int
 
-data Tasks = Tasks (MVar (Int, [Task]))
+data Tasks = Tasks (MVar (Generation, [Task]))
   -- ^ Generation (used to discard WakeUps from explicitely killed sleep),
   -- set of tasks.
 
--- | Get a reference to tasks. Doing so, let them communicate if a new wakeup
--- must be rescheduled, or completely canceled.
-makeTasks :: (Int -> Int -> IO ()) -> (IO ()) -> IO Tasks
+-- | Get a reference to tasks. Doing so, let them communicate asynchronously
+-- if a new wakeup must be rescheduled, or completely canceled.
+makeTasks :: (Generation -> Int -> IO ()) -> (IO ()) -> IO Client
 makeTasks request cancel = do
   ref <- newMVar (0, [5, 6, 7, 8])
   _ <- forkIO $ do
@@ -72,13 +84,15 @@ makeTasks request cancel = do
     request (g' + 1) 1
     threadDelay $ 6 * 1000000
     cancel
-  return $ Tasks ref
+  return . Client . runTasks $ Tasks ref
 
 -- | Give a chance to tasks to be run. Return possibly a request to receive
 -- another wakeup n seconds later. The second argument is a generation (i.e. a
 -- identifier to discard wakeups received while they were cancelled).
-wakeUp :: Tasks -> Int -> IO (Maybe (Int, Int))
-wakeUp (Tasks ref) g = do
+-- To request a wakeup without waiting for `runTasks` to be called, the
+-- `request` argument in `makeTasks` above should be used.
+runTasks :: Tasks -> Generation -> IO (Maybe (Generation, Int))
+runTasks (Tasks ref) g = do
   (g', tasks) <- takeMVar ref
   case tasks of
     _ | g /= g' -> do
