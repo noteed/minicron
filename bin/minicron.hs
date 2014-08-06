@@ -1,9 +1,19 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
 module Main (main) where
 
 import Control.Concurrent (forkIO, killThread, threadDelay, ThreadId)
 import Control.Concurrent.Chan (newChan, readChan, writeChan, Chan)
 import Control.Concurrent.MVar (modifyMVar, newMVar, takeMVar, putMVar, MVar)
+import Data.AffineSpace ((.+^), (.-.))
+import Data.List (sortBy)
+import Data.Ord (comparing)
+import Data.Text (Text)
+import qualified Data.Text as T
+import Data.Thyme.Clock (fromSeconds, getCurrentTime, toSeconds, UTCTime)
+import Data.Thyme.Format (formatTime)
+import System.Locale (defaultTimeLocale, iso8601DateFormat)
 
 main :: IO ()
 main = do
@@ -40,7 +50,7 @@ mainThread' chan mw tasks = do
   mainThread chan tasks msleep
 
 sleepThread chan (g, amount) = do
-  threadDelay $ amount * 1000000
+  threadDelay amount
   writeChan chan $ WakeUp g
 
 data Event =
@@ -61,29 +71,18 @@ newtype Generation = Generation Int
 
 data Client = Client { wakeup :: Generation -> IO (Maybe (Generation, Int)) }
 
--- In this simple cron modelling, this is the number of seconds to wait
--- after the previous task has been run (or the system has been started).
-type Task = Int
-
-data Tasks = Tasks (MVar (Generation, [Task]))
-  -- ^ Generation (used to discard WakeUps from explicitely killed sleep),
-  -- set of tasks.
-
 -- | Get a reference to tasks. Doing so, let them communicate asynchronously
 -- if a new wakeup must be rescheduled, or completely canceled.
 makeTasks :: (Generation -> Int -> IO ()) -> (IO ()) -> IO Client
 makeTasks request cancel = do
-  ref <- newMVar (0, [5, 6, 7, 8])
+  -- Initial task set.
+  now <- getCurrentTime
+  let task n = Task (now .+^ fromSeconds n) "do-something" $
+        Just (Nothing, 24 * 60 * 60)
+
+  ref <- newMVar (0, map task [5, 10])
   _ <- forkIO $ do
-    request 0 5
-    threadDelay $ 13 * 1000000
-    g <- modifyMVar ref (\(g, _) -> return ((g + 1, [1, 2]), g))
-    request (g + 1) 1
-    threadDelay $ 10 * 1000000
-    g' <- modifyMVar ref (\(g, _) -> return ((g + 1, [1, 2, 2, 2, 2, 2]), g))
-    request (g' + 1) 1
-    threadDelay $ 6 * 1000000
-    cancel
+    request 0 5000000
   return . Client . runTasks $ Tasks ref
 
 -- | Give a chance to tasks to be run. Return possibly a request to receive
@@ -104,8 +103,44 @@ runTasks (Tasks ref) g = do
       putMVar ref (g', tasks)
       return Nothing
     task : tasks' -> do
-      putStrLn $ "Running task: " ++ show task
-      putMVar ref (g + 1, tasks')
-      case tasks' of
+      putStrLn $ T.unpack (taskMethod task) ++ " @ " ++
+        formatTime locale format (taskWhen task)
+      let tasks'' = reschedule task tasks'
+      putMVar ref (g + 1, tasks'')
+      case tasks'' of
         [] -> return Nothing
-        amount:_ -> return $ Just (g + 1, amount)
+        task':_ -> do
+          amount <- amountToSleep task'
+          return $ Just (g + 1, amount)
+  where
+  locale = defaultTimeLocale
+  format = iso8601DateFormat $ Just "%H:%M:%S"
+
+amountToSleep Task{..} = do
+  now <- getCurrentTime
+  -- TODO In a recent version of Thyme, we could use `microseconds` instead
+  -- of second * 10^6.
+  return $ ceiling . (* 1000) . (* 1000) . toSeconds $ taskWhen .-. now
+
+reschedule Task{..} tasks =
+  case taskRepetition of
+    Just (count, interval) | maybe 1 id count > 0 ->
+      let task = Task (taskWhen .+^ fromSeconds interval) taskMethod $
+            Just (fmap pred count, interval)
+      in reorder $ task : tasks
+    _ -> tasks
+
+reorder = sortBy (comparing taskWhen)
+
+data Task = Task
+  { taskWhen :: UTCTime
+  , taskMethod :: Text
+  , taskRepetition :: Maybe (Maybe Int, Int)
+  -- ^ Possibly repeat the task, possibly a finite number of times, every n
+  -- seconds.
+  }
+  deriving Show
+
+data Tasks = Tasks (MVar (Generation, [Task]))
+  -- ^ Generation (used to discard WakeUps from explicitely killed sleep),
+  -- set of tasks.
