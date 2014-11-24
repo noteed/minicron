@@ -18,33 +18,12 @@ import System.Cron.WakeUp
 
 cron tasks = wakeupService $ \request cancel -> do
   ref <- newMVar (0, reorder tasks)
-  case tasks of
-    task : _ -> do
-      _ <- forkIO $ do
-        amountToSleep task >>= request 0
-      return ()
-    _ -> return ()
-  return . Client . runTasks $ Tasks ref
-
--- | Get a reference to tasks. Doing so, let them communicate asynchronously
--- if a new wakeup must be rescheduled, or completely canceled.
-makeTasks :: (Generation -> Int -> IO ()) -> (IO ()) -> IO Client
-makeTasks request cancel = do
-  -- Initial task set.
-  now <- getCurrentTime
-  let task n = Task (now .+^ fromSeconds n) "do-something" $
-        Just (Nothing, 24 * 60 * 60)
-
-  ref <- newMVar (0, reorder $ map task [5, 10])
-  _ <- forkIO $ do
-    request 0 0
+  request 0 0
   return . Client . runTasks $ Tasks ref
 
 -- | Give a chance to tasks to be run. Return possibly a request to receive
 -- another wakeup n seconds later. The second argument is a generation (i.e. a
 -- identifier to discard wakeups received while they were cancelled).
--- To request a wakeup without waiting for `runTasks` to be called, the
--- `request` argument in `makeTasks` above should be used.
 runTasks :: Tasks -> Generation -> IO (Maybe (Generation, Int))
 runTasks (Tasks ref) g = do
   (g', tasks) <- takeMVar ref
@@ -54,23 +33,32 @@ runTasks (Tasks ref) g = do
       putMVar ref (g', tasks)
       return Nothing
     [] -> do
-      putStrLn $ "Error: no task after wakeup."
       putMVar ref (g', tasks)
       return Nothing
     task : tasks' -> do
-      putStrLn $ "Running: " ++ T.unpack (taskMethod task) ++ " @ " ++
-        formatTime locale format (taskWhen task)
-      let tasks'' = reschedule task tasks'
-      putMVar ref (g + 1, tasks'')
+      amount_ <- amountToSleep task
+      if amount_ > 0
+        then do
+          -- Wakeup is too early (e.g. the first wakeup to initialize the
+          -- system).
+          putStrLn $ "Next task: " ++ T.unpack (taskMethod task) ++ " @ " ++
+            formatTime locale format (taskWhen task)
+          putMVar ref (g + 1, tasks)
+          return $ Just (g + 1, amount_)
+        else do
+          putStrLn $ "Running: " ++ T.unpack (taskMethod task) ++ " @ " ++
+            formatTime locale format (taskWhen task)
+          let tasks'' = reschedule task tasks'
+          putMVar ref (g + 1, tasks'')
 
-      -- Select next task and return how long to wait.
-      case tasks'' of
-        [] -> return Nothing
-        task':_ -> do
-          amount <- amountToSleep task'
-          putStrLn $ "Next task: " ++ T.unpack (taskMethod task') ++ " @ " ++
-            formatTime locale format (taskWhen task')
-          return $ Just (g + 1, amount)
+          -- Select next task and return how long to wait.
+          case tasks'' of
+            [] -> return Nothing
+            task':_ -> do
+              amount <- amountToSleep task'
+              putStrLn $ "Next task: " ++ T.unpack (taskMethod task') ++ " @ " ++
+                formatTime locale format (taskWhen task')
+              return $ Just (g + 1, amount)
   where
   locale = defaultTimeLocale
   format = iso8601DateFormat $ Just "%H:%M:%S"

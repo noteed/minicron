@@ -50,8 +50,12 @@ mainThread chan tasks msleep = do
       mainThread' chan Nothing tasks
 
 mainThread' chan mw tasks = do
-  msleep <- maybe (return Nothing) (fmap Just . forkIO . sleepThread chan) mw
-  mainThread chan tasks msleep
+  case mw of
+    Nothing -> do
+      putStrLn "No more tasks - Exiting."
+    Just w -> do
+      sleepThread <- forkIO $ sleepThread chan w
+      mainThread chan tasks (Just sleepThread)
 
 sleepThread chan (g, amount) = do
   threadDelay amount
