@@ -2,9 +2,7 @@
 {-# LANGUAGE RecordWildCards #-}
 module System.Cron.Mini where
 
-import Control.Concurrent (forkIO, killThread, threadDelay, ThreadId)
-import Control.Concurrent.Chan (newChan, readChan, writeChan, Chan)
-import Control.Concurrent.MVar (modifyMVar, newMVar, takeMVar, putMVar, MVar)
+import Control.Concurrent.MVar (newMVar, takeMVar, putMVar, MVar)
 import Data.AffineSpace ((.+^), (.-.))
 import Data.List (sortBy)
 import Data.Ord (comparing)
@@ -16,7 +14,8 @@ import System.Locale (defaultTimeLocale, iso8601DateFormat)
 
 import System.Cron.WakeUp
 
-cron tasks = wakeupService $ \request cancel -> do
+cron :: [Task] -> IO ()
+cron tasks = wakeupService $ \request _ -> do
   ref <- newMVar (0, reorder tasks)
   request 0 0
   return . Client . runTasks $ Tasks ref
@@ -63,12 +62,14 @@ runTasks (Tasks ref) g = do
   locale = defaultTimeLocale
   format = iso8601DateFormat $ Just "%H:%M:%S"
 
+amountToSleep :: Task -> IO Int
 amountToSleep Task{..} = do
   now <- getCurrentTime
   -- TODO In a recent version of Thyme, we could use `microseconds` instead
   -- of second * 10^6.
-  return $ ceiling . (* 1000) . (* 1000) . toSeconds $ taskWhen .-. now
+  return $ ceiling . (* (1000 :: Double)) . (* 1000) . toSeconds $ taskWhen .-. now
 
+reschedule :: Task -> [Task] -> [Task]
 reschedule Task{..} tasks =
   case taskRepetition of
     Just (count, interval) | maybe 1 id count > 0 ->
@@ -77,6 +78,7 @@ reschedule Task{..} tasks =
       in reorder $ task : tasks
     _ -> tasks
 
+reorder :: [Task] -> [Task]
 reorder = sortBy (comparing taskWhen)
 
 data Task = Task

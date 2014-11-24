@@ -4,15 +4,6 @@ module System.Cron.WakeUp where
 
 import Control.Concurrent (forkIO, killThread, threadDelay, ThreadId)
 import Control.Concurrent.Chan (newChan, readChan, writeChan, Chan)
-import Control.Concurrent.MVar (modifyMVar, newMVar, takeMVar, putMVar, MVar)
-import Data.AffineSpace ((.+^), (.-.))
-import Data.List (sortBy)
-import Data.Ord (comparing)
-import Data.Text (Text)
-import qualified Data.Text as T
-import Data.Thyme.Clock (fromSeconds, getCurrentTime, toSeconds, UTCTime)
-import Data.Thyme.Format (formatTime)
-import System.Locale (defaultTimeLocale, iso8601DateFormat)
 
 -- | A generation is used to identify a particular state in the tasks thread.
 -- It can be viewed as a request ID from the client to the wakeup service. The
@@ -24,6 +15,7 @@ newtype Generation = Generation Int
 
 data Client = Client { wakeup :: Generation -> IO (Maybe (Generation, Int)) }
 
+wakeupService :: ((Generation -> Int -> IO ()) -> IO () -> IO Client) -> IO ()
 wakeupService client = do
   chan <- newChan
   let request g n = writeChan chan $ RequestWakeUp g n
@@ -49,14 +41,16 @@ mainThread chan tasks msleep = do
       maybe (return ()) killThread msleep
       mainThread' chan Nothing tasks
 
+mainThread' :: Chan Event -> Maybe (Generation, Int) -> Client -> IO ()
 mainThread' chan mw tasks = do
   case mw of
     Nothing -> do
       putStrLn "No more tasks - Exiting."
     Just w -> do
-      sleepThread <- forkIO $ sleepThread chan w
-      mainThread chan tasks (Just sleepThread)
+      s <- forkIO $ sleepThread chan w
+      mainThread chan tasks (Just s)
 
+sleepThread :: Chan Event -> (Generation, Int) -> IO ()
 sleepThread chan (g, amount) = do
   threadDelay amount
   writeChan chan $ WakeUp g

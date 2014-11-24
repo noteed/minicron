@@ -1,0 +1,21 @@
+name:                minicron
+version:             0.0.0
+Cabal-Version:       >= 1.8
+synopsis:            Minicron runs tasks.
+description:         Minicron runs tasks.
+category:            System
+license:             BSD3
+license-file:        LICENSE
+author:              Vo Minh Thu
+maintainer:          thu@hypered.io
+build-type:          Simple
+
+library
+  build-depends:       base == 4.*,
+                       old-locale == 1.0.*,
+                       text == 0.11.*,
+                       thyme == 0.3.*,
+                       vector-space == 0.8.*
+  exposed-modules:     System.Cron.Mini,
+                       System.Cron.WakeUp
+  ghc-options:         -Wall
