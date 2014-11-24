@@ -11,7 +11,8 @@ main = do
   putStrLn "minicron"
 
   now <- getCurrentTime
-  let task n = Task (now .+^ fromSeconds n) "do-something" $
-        Just (Nothing, 24 * 60 * 60)
+  let task n = Task (now .+^ fromSeconds n) "do-something"
+        (Just (Nothing, 24 * 60 * 60))
+        (\_ -> putStrLn "In do-something's handler.")
 
   cron $ map task [5, 10]

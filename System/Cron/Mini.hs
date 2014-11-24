@@ -47,6 +47,7 @@ runTasks (Tasks ref) g = do
         else do
           putStrLn $ "Running: " ++ T.unpack (taskMethod task) ++ " @ " ++
             formatTime locale format (taskWhen task)
+          taskHandler task task
           let tasks'' = reschedule task tasks'
           putMVar ref (g + 1, tasks'')
 
@@ -73,8 +74,9 @@ reschedule :: Task -> [Task] -> [Task]
 reschedule Task{..} tasks =
   case taskRepetition of
     Just (count, interval) | maybe 1 id count > 0 ->
-      let task = Task (taskWhen .+^ fromSeconds interval) taskMethod $
-            Just (fmap pred count, interval)
+      let task = Task (taskWhen .+^ fromSeconds interval) taskMethod
+            (Just (fmap pred count, interval))
+            taskHandler
       in reorder $ task : tasks
     _ -> tasks
 
@@ -87,8 +89,8 @@ data Task = Task
   , taskRepetition :: Maybe (Maybe Int, Int)
   -- ^ Possibly repeat the task, possibly a finite number of times, every n
   -- seconds.
+  , taskHandler :: Task -> IO()
   }
-  deriving Show
 
 data Tasks = Tasks (MVar (Generation, [Task]))
   -- ^ Generation (used to discard WakeUps from explicitely killed sleep),
