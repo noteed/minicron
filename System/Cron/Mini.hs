@@ -14,25 +14,23 @@ import System.Locale (defaultTimeLocale, iso8601DateFormat)
 
 import System.Cron.WakeUp
 
+-- | Schedule a fixed set of tasks. There is no way to delete or add tasks. If
+-- this is necessary, use directly `wakeupService`. Once there is no remaining
+-- tasks, the function exits.
 cron :: [Task] -> IO ()
-cron tasks = wakeupService $ \request _ -> do
-  ref <- newMVar (0, reorder tasks)
-  request 0 0
+cron tasks = wakeupService False $ \request -> do
+  ref <- newMVar (reorder tasks)
+  request 0
   return . Client . runTasks $ Tasks ref
 
 -- | Give a chance to tasks to be run. Return possibly a request to receive
--- another wakeup n seconds later. The second argument is a generation (i.e. a
--- identifier to discard wakeups received while they were cancelled).
-runTasks :: Tasks -> Generation -> IO (Maybe (Generation, Int))
-runTasks (Tasks ref) g = do
-  (g', tasks) <- takeMVar ref
+-- another wakeup n seconds later.
+runTasks :: Tasks -> IO (Maybe Int)
+runTasks (Tasks ref) = do
+  tasks <- takeMVar ref
   case tasks of
-    _ | g /= g' -> do
-      -- This is a wakeup from a cancel request. Ignore it.
-      putMVar ref (g', tasks)
-      return Nothing
     [] -> do
-      putMVar ref (g', tasks)
+      putMVar ref tasks
       return Nothing
     task : tasks' -> do
       amount_ <- amountToSleep task
@@ -42,14 +40,14 @@ runTasks (Tasks ref) g = do
           -- system).
           putStrLn $ "Next task: " ++ T.unpack (taskMethod task) ++ " @ " ++
             formatTime locale format (taskWhen task)
-          putMVar ref (g + 1, tasks)
-          return $ Just (g + 1, amount_)
+          putMVar ref tasks
+          return $ Just amount_
         else do
           putStrLn $ "Running: " ++ T.unpack (taskMethod task) ++ " @ " ++
             formatTime locale format (taskWhen task)
           taskHandler task task
           let tasks'' = reschedule task tasks'
-          putMVar ref (g + 1, tasks'')
+          putMVar ref tasks''
 
           -- Select next task and return how long to wait.
           case tasks'' of
@@ -58,7 +56,7 @@ runTasks (Tasks ref) g = do
               amount <- amountToSleep task'
               putStrLn $ "Next task: " ++ T.unpack (taskMethod task') ++ " @ " ++
                 formatTime locale format (taskWhen task')
-              return $ Just (g + 1, amount)
+              return $ Just amount
   where
   locale = defaultTimeLocale
   format = iso8601DateFormat $ Just "%H:%M:%S"
@@ -92,6 +90,5 @@ data Task = Task
   , taskHandler :: Task -> IO()
   }
 
-data Tasks = Tasks (MVar (Generation, [Task]))
-  -- ^ Generation (used to discard WakeUps from explicitely killed sleep),
-  -- set of tasks.
+-- | A mutable set of tasks.
+data Tasks = Tasks (MVar [Task])
