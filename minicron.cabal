@@ -13,9 +13,9 @@ build-type:          Simple
 library
   build-depends:       base == 4.*,
                        old-locale == 1.0.*,
-                       text == 0.11.*,
+                       text == 1.2.*,
                        thyme == 0.3.*,
-                       vector-space == 0.8.*
+                       vector-space == 0.10.*
   exposed-modules:     System.Cron.Mini,
                        System.Cron.WakeUp
   ghc-options:         -Wall
