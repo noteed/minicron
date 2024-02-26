@@ -1,6 +1,6 @@
 #! /usr/bin/env bash
 
-STACK_IMAGE=${1:-7.8.4}
+STACK_IMAGE=${1:-8.0.2}
 
 docker run \
   -v `pwd`:/source \
