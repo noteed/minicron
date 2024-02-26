@@ -9,8 +9,7 @@ import Data.Ord (comparing)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Thyme.Clock (fromSeconds, getCurrentTime, toSeconds, UTCTime)
-import Data.Thyme.Format (formatTime)
-import System.Locale (defaultTimeLocale, iso8601DateFormat)
+import Data.Thyme.Format (defaultTimeLocale, formatTime)
 
 import System.Cron.WakeUp
 
@@ -59,7 +58,7 @@ runTasks (Tasks ref) = do
               return $ Just amount
   where
   locale = defaultTimeLocale
-  format = iso8601DateFormat $ Just "%H:%M:%S"
+  format = "%Y-%m-%dT%H:%M:%S%N"
 
 amountToSleep :: Task -> IO Int
 amountToSleep Task{..} = do
