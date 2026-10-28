@@ -14,7 +14,7 @@ let
   nix-tooling = with hp; [ (callCabal2nix "niv" sources.niv { }) ];
 
   # Haskell tools
-  haskell-tooling = with hp; [ cabal-install ghcid hlint hasktags fourmolu apply-refact ];
+  haskell-tooling = with hp; [ cabal-install ghcid hlint hasktags fourmolu ];
 
   # Add more as we need them.
   formatters = [ nixpkgs.treefmt ] ;
